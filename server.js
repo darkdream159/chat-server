@@ -11,9 +11,7 @@ if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
 
-// 内存中的用户表
 const users = new Map();
-// 内存中的连接表（clientId -> userId）
 const connections = new Map();
 const clients = new Map();
 
@@ -42,7 +40,6 @@ const server = http.createServer((req, res) => {
         
         let fileData = null;
         let fileName = 'file';
-        let fieldName = 'file';
 
         for (const part of parts) {
           if (part.includes('Content-Disposition')) {
@@ -51,9 +48,6 @@ const server = http.createServer((req, res) => {
             
             const headers = part.substring(0, headerEnd);
             const content = part.substring(headerEnd + 4);
-            
-            const nameMatch = headers.match(/name="([^"]+)"/);
-            if (nameMatch) fieldName = nameMatch[1];
             
             const filenameMatch = headers.match(/filename="([^"]+)"/);
             if (filenameMatch) {
@@ -115,37 +109,47 @@ wss.on('connection', (ws) => {
     try {
       const message = JSON.parse(data);
       
-      // 处理登录/身份验证
       if (message.type === 'login') {
         const { userId, nickname, avatar } = message;
         
         if (!userId) {
-          ws.send(JSON.stringify({
-            type: 'error',
-            content: '缺少用户ID'
-          }));
+          ws.send(JSON.stringify({ type: 'error', content: '缺少用户ID' }));
           return;
         }
         
         currentUserId = userId;
         currentUserInfo = { 
           userId, 
-          nickname: nickname || `用户${userId.substr(-6)}`, 
+          nickname: nickname || `用户${userId.substr(0, 8)}`, 
           avatar: avatar || '' 
         };
         
-        // 保存或更新用户信息
+        const oldInfo = users.get(userId);
+        const infoChanged = !oldInfo || oldInfo.nickname !== currentUserInfo.nickname || oldInfo.avatar !== currentUserInfo.avatar;
+        
         users.set(userId, currentUserInfo);
-        // 保存连接
         connections.set(clientId, userId);
         clients.set(clientId, ws);
         
-        // 计算在线人数（去重）
         const onlineUserIds = new Set(connections.values());
         
-        console.log(`用户 ${userId}(${currentUserInfo.nickname}) 登录，在线: ${onlineUserIds.size}人`);
+        if (infoChanged) {
+          console.log(`用户 ${userId}(${currentUserInfo.nickname}) 更新了资料`);
+          
+          clients.forEach((client, cid) => {
+            if (cid !== clientId && client.readyState === WebSocket.OPEN) {
+              client.send(JSON.stringify({
+                type: 'profile_update',
+                userId: userId,
+                nickname: currentUserInfo.nickname,
+                avatar: currentUserInfo.avatar
+              }));
+            }
+          });
+        } else {
+          console.log(`用户 ${userId}(${currentUserInfo.nickname}) 重新连接，在线: ${onlineUserIds.size}人`);
+        }
         
-        // 发送欢迎
         ws.send(JSON.stringify({
           type: 'welcome',
           userId: userId,
@@ -157,23 +161,17 @@ wss.on('connection', (ws) => {
         return;
       }
       
-      // 普通消息
       if (!currentUserId) {
-        ws.send(JSON.stringify({
-          type: 'error',
-          content: '请先登录'
-        }));
+        ws.send(JSON.stringify({ type: 'error', content: '请先登录' }));
         return;
       }
       
-      // 附上用户信息
       message.from = currentUserId;
       message.userInfo = currentUserInfo;
       message.timestamp = Date.now();
       
       console.log(`收到消息 from ${currentUserInfo?.nickname || currentUserId}:`, message.type);
       
-      // 广播给所有人
       clients.forEach((client, cid) => {
         if (cid !== clientId && client.readyState === WebSocket.OPEN) {
           client.send(JSON.stringify(message));
@@ -189,12 +187,10 @@ wss.on('connection', (ws) => {
       connections.delete(clientId);
       clients.delete(clientId);
       
-      // 计算在线人数
       const onlineUserIds = new Set(connections.values());
       
       console.log(`用户 ${currentUserId} 断开，在线: ${onlineUserIds.size}人`);
       
-      // 通知其他人
       if (onlineUserIds.size > 0) {
         clients.forEach((client) => {
           if (client.readyState === WebSocket.OPEN) {
