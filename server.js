@@ -147,7 +147,7 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('error', (error) => {
-    console.error(`用户 ${userId} 错误:', error);
+    console.error(`用户 ${userId} 错误:`, error);
     clients.delete(userId);
   });
 });
