@@ -11,6 +11,12 @@ if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
 
+// 内存中的用户表
+const users = new Map();
+// 内存中的连接表（clientId -> userId）
+const connections = new Map();
+const clients = new Map();
+
 const server = http.createServer((req, res) => {
   const getBaseUrl = () => {
     const host = req.headers.host;
@@ -98,57 +104,117 @@ const server = http.createServer((req, res) => {
 
 const wss = new WebSocket.Server({ server });
 
-const clients = new Map();
-let userIdCounter = 1;
-
 wss.on('connection', (ws) => {
-  const userId = `user${userIdCounter++}`;
-  clients.set(userId, ws);
+  let currentUserId = null;
+  let currentUserInfo = null;
+  const clientId = Math.random().toString(36).substr(2, 9);
   
-  console.log(`用户 ${userId} 已连接，当前在线: ${clients.size}`);
+  console.log(`新连接 ${clientId}`);
   
-  ws.send(JSON.stringify({
-    type: 'welcome',
-    userId: userId,
-    onlineCount: clients.size
-  }));
-
   ws.on('message', (data) => {
     try {
       const message = JSON.parse(data);
-      message.from = userId;
+      
+      // 处理登录/身份验证
+      if (message.type === 'login') {
+        const { userId, nickname, avatar } = message;
+        
+        if (!userId) {
+          ws.send(JSON.stringify({
+            type: 'error',
+            content: '缺少用户ID'
+          }));
+          return;
+        }
+        
+        currentUserId = userId;
+        currentUserInfo = { 
+          userId, 
+          nickname: nickname || `用户${userId.substr(-6)}`, 
+          avatar: avatar || '' 
+        };
+        
+        // 保存或更新用户信息
+        users.set(userId, currentUserInfo);
+        // 保存连接
+        connections.set(clientId, userId);
+        clients.set(clientId, ws);
+        
+        // 计算在线人数（去重）
+        const onlineUserIds = new Set(connections.values());
+        
+        console.log(`用户 ${userId}(${currentUserInfo.nickname}) 登录，在线: ${onlineUserIds.size}人`);
+        
+        // 发送欢迎
+        ws.send(JSON.stringify({
+          type: 'welcome',
+          userId: userId,
+          nickname: currentUserInfo.nickname,
+          avatar: currentUserInfo.avatar,
+          onlineCount: onlineUserIds.size
+        }));
+        
+        return;
+      }
+      
+      // 普通消息
+      if (!currentUserId) {
+        ws.send(JSON.stringify({
+          type: 'error',
+          content: '请先登录'
+        }));
+        return;
+      }
+      
+      // 附上用户信息
+      message.from = currentUserId;
+      message.userInfo = currentUserInfo;
       message.timestamp = Date.now();
       
-      console.log(`收到消息 from ${userId}:`, message.type);
+      console.log(`收到消息 from ${currentUserInfo?.nickname || currentUserId}:`, message.type);
       
-      clients.forEach((client, id) => {
-        if (id !== userId && client.readyState === WebSocket.OPEN) {
+      // 广播给所有人
+      clients.forEach((client, cid) => {
+        if (cid !== clientId && client.readyState === WebSocket.OPEN) {
           client.send(JSON.stringify(message));
         }
       });
     } catch (error) {
-      console.error('消息解析错误:', error);
+      console.error('消息处理错误:', error);
     }
   });
 
   ws.on('close', () => {
-    clients.delete(userId);
-    console.log(`用户 ${userId} 已断开，当前在线: ${clients.size}`);
-    
-    clients.forEach((client) => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(JSON.stringify({
-          type: 'system',
-          content: `用户 ${userId} 已离开`,
-          onlineCount: clients.size
-        }));
+    if (currentUserId) {
+      connections.delete(clientId);
+      clients.delete(clientId);
+      
+      // 计算在线人数
+      const onlineUserIds = new Set(connections.values());
+      
+      console.log(`用户 ${currentUserId} 断开，在线: ${onlineUserIds.size}人`);
+      
+      // 通知其他人
+      if (onlineUserIds.size > 0) {
+        clients.forEach((client) => {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({
+              type: 'system',
+              content: `👤 在线人数: ${onlineUserIds.size} 人`,
+              onlineCount: onlineUserIds.size
+            }));
+          }
+        });
       }
-    });
+    }
   });
 
   ws.on('error', (error) => {
-    console.error(`用户 ${userId} 错误:`, error);
-    clients.delete(userId);
+    console.error(`连接错误:`, error);
+    if (clientId) {
+      connections.delete(clientId);
+      clients.delete(clientId);
+    }
   });
 });
 
