@@ -12,6 +12,12 @@ if (!fs.existsSync(UPLOAD_DIR)) {
 }
 
 const server = http.createServer((req, res) => {
+  const getBaseUrl = () => {
+    const host = req.headers.host;
+    const protocol = (req.headers['x-forwarded-proto'] || 'https');
+    return `${protocol}://${host}`;
+  };
+  
   if (req.url === '/upload' && req.method === 'POST') {
     const contentType = req.headers['content-type'] || '';
     
@@ -59,7 +65,8 @@ const server = http.createServer((req, res) => {
           
           fs.writeFileSync(filePath, fileData, 'binary');
           
-          const fileUrl = `https://kingoflive.com/uploads/${safeName}`;
+          const baseUrl = getBaseUrl();
+          const fileUrl = `${baseUrl}/uploads/${safeName}`;
           
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ url: fileUrl, fileName: fileName }));
@@ -140,7 +147,7 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('error', (error) => {
-    console.error(`用户 ${userId} 错误:`, error);
+    console.error(`用户 ${userId} 错误:', error);
     clients.delete(userId);
   });
 });
